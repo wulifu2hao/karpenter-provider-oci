@@ -52,6 +52,12 @@ func NewDiscoveredCapacity(ttl time.Duration) *DiscoveredCapacity {
 	}
 }
 
+// Enabled reports whether capacity discovery is switched on. Callers use it to skip the work of
+// establishing a key at all, not merely the lookup: resolving an image is the expensive part.
+func (d *DiscoveredCapacity) Enabled() bool {
+	return d != nil && !d.disabled
+}
+
 // Get returns the memory capacity observed for key, if one has been recorded.
 func (d *DiscoveredCapacity) Get(key string) (resource.Quantity, bool) {
 	if d.disabled {

@@ -414,5 +414,16 @@ func TestDiscoveredCapacityTTLOption(t *testing.T) {
 		g.Expect(base(1440).Validate()).To(Succeed())
 		g.Expect(base(0).Validate()).To(Succeed(), "zero must be accepted: it is how the feature is disabled")
 		g.Expect(base(-1).Validate()).To(MatchError(ContainSubstring("discovered-capacity-ttl-hours")))
+
+		// The value is multiplied by time.Hour, so anything past this overflows int64 nanoseconds.
+		// 2^51 hours wraps to exactly zero, which would disable the feature instead of failing.
+		g.Expect(base(maxDiscoveredCapacityTTLHours).Validate()).To(Succeed())
+		g.Expect(base(maxDiscoveredCapacityTTLHours + 1).Validate()).
+			To(MatchError(ContainSubstring("discovered-capacity-ttl-hours")))
+		g.Expect(base(1<<51).Validate()).
+			To(MatchError(ContainSubstring("discovered-capacity-ttl-hours")),
+				"a value that wraps to zero must be rejected, not silently disable discovery")
+		wrapping := 1 << 51
+		g.Expect(time.Duration(wrapping)*time.Hour).To(BeZero(), "the wrap this guards against")
 	})
 }

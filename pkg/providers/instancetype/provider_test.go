@@ -654,7 +654,7 @@ func TestCalculatePricesAndOfferings(t *testing.T) {
 	}
 	// decorate -> should add on-demand offerings (available) and spot offerings since not burstable and preemptible
 	err := p.decorateInstanceType(context.Background(), it, nc, sa,
-		[]v1.Taint{preemptibleTaintNoSchedule})
+		[]v1.Taint{preemptibleTaintNoSchedule}, "")
 	require.NoError(t, err)
 	// We expect at least the on-demand offerings for both ads and spot offerings for both ads
 	var onDemand, spot int
@@ -740,7 +740,7 @@ func TestDecorateInstanceType_DoesNotDeadlock(t *testing.T) {
 	decorateDone := make(chan error, 1)
 	go func() {
 		decorateDone <- p.decorateInstanceType(context.Background(), instanceType, nodeClass, shapeAndAd,
-			[]v1.Taint{preemptibleTaintNoSchedule})
+			[]v1.Taint{preemptibleTaintNoSchedule}, "")
 	}()
 
 	select {

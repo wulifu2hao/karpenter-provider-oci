@@ -275,7 +275,8 @@ func (p *DefaultProvider) listInstanceTypesForFlexShape(ctx context.Context, sha
 // Besides populating metadata like cost/preemptible/availability, it also handles flexible & burstable shape.
 // nolint:lll
 func (p *DefaultProvider) decorateInstanceType(ctx context.Context, it *OciInstanceType,
-	nodeClass *ociv1beta1.OCINodeClass, shapeAndAd *ShapeAndAd, taints []v1.Taint) error {
+	nodeClass *ociv1beta1.OCINodeClass, shapeAndAd *ShapeAndAd, taints []v1.Taint,
+	discoveredImageID string) error {
 	if it == nil || nodeClass == nil || shapeAndAd == nil || shapeAndAd.Shape == nil {
 		return nil
 	}
@@ -325,7 +326,7 @@ func (p *DefaultProvider) decorateInstanceType(ctx context.Context, it *OciInsta
 	// Prefer memory actually measured on a node of this kind over the modelled figure.
 	// Applied after setCapacity rather than inside it so that the estimate stays a single,
 	// self-contained calculation and discovery is visibly an override of it.
-	p.applyDiscoveredCapacity(ctx, it, nodeClass)
+	p.applyDiscoveredCapacity(it, discoveredImageID)
 
 	basePrice, priceAvailable := p.calculatePrices(shape, ocpu, memoryInGbs, cpuBaseline)
 
@@ -1008,10 +1009,17 @@ func (p *DefaultProvider) makeInstanceTypes(ctx context.Context,
 		candidateTypes = []*OciInstanceType{it}
 	}
 
+	// Resolve the image once for the shape rather than once per generated configuration. A flexible
+	// shape expands into many instance types that all share it, and resolution is the only part of
+	// decoration that can reach OCI. Failures are not cached, so resolving per instance type would
+	// repeat a failing request - and its retries - for every configuration, while this call tree
+	// holds the provider read lock.
+	discoveredImageID := p.resolveImageForDiscovery(ctx, *sa.Shape.Shape, nodeClass)
+
 	ret := make([]*OciInstanceType, 0)
 	for _, it := range candidateTypes {
 		// decorate offering, capacity, overhead
-		err := p.decorateInstanceType(ctx, it, nodeClass, sa, taints)
+		err := p.decorateInstanceType(ctx, it, nodeClass, sa, taints, discoveredImageID)
 		if err != nil {
 			return nil, err
 		}

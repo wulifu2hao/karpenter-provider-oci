@@ -36,13 +36,18 @@ const (
 type fakeImageProvider struct {
 	imageID string
 	err     error
+	// gotShapes records what resolution was asked for, so passing the wrong identifier - the
+	// instance type name instead of the shape, say - cannot pass unnoticed.
+	gotShapes []string
 }
 
 func (f *fakeImageProvider) ResolveImages(context.Context, *ociv1beta1.ImageConfig) (*image.ImageResolveResult, error) {
 	return f.resolve()
 }
 
-func (f *fakeImageProvider) ResolveImageForShape(context.Context, *ociv1beta1.ImageConfig, string) (*image.ImageResolveResult, error) {
+func (f *fakeImageProvider) ResolveImageForShape(_ context.Context, _ *ociv1beta1.ImageConfig,
+	shape string) (*image.ImageResolveResult, error) {
+	f.gotShapes = append(f.gotShapes, shape)
 	return f.resolve()
 }
 
@@ -215,7 +220,7 @@ func TestDiscoveredCapacity_UnrelatedImageDoesNotInvalidate(t *testing.T) {
 	it.Shape = testShape
 	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
 
-	p.applyDiscoveredCapacity(ctx, it, nc)
+	p.applyDiscoveredCapacity(it, testImageID)
 
 	want := resource.MustParse("30890Mi")
 	assert.Equal(t, want.Value(), it.Capacity.Memory().Value(),
@@ -224,27 +229,41 @@ func TestDiscoveredCapacity_UnrelatedImageDoesNotInvalidate(t *testing.T) {
 
 // Scheduling must not depend on the image API being reachable: if resolution fails there is no key
 // to look under, and the modelled estimate - which is deliberately conservative - stands.
-func TestApplyDiscoveredCapacity_ImageResolutionFailureKeepsEstimate(t *testing.T) {
+func TestResolveImageForDiscovery_FailureYieldsNoKey(t *testing.T) {
 	p := discoveryProvider()
-	nc := discoveryNodeClass(testImageID)
-	modelled := resource.MustParse("32Gi")
-
-	p.discoveredCapacity.Record(context.Background(),
-		discoveredCapacityCacheKey(testInstanceTypeName, testImageID), resource.MustParse("30890Mi"))
 	p.imageProvider = &fakeImageProvider{err: assert.AnError}
 
-	it := &OciInstanceType{}
-	it.Name = testInstanceTypeName
-	it.Shape = testShape
-	it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
+	assert.Equal(t, "", p.resolveImageForDiscovery(context.Background(), testShape, discoveryNodeClass(testImageID)))
+}
 
-	p.applyDiscoveredCapacity(context.Background(), it, nc)
+// Turning the feature off must skip the resolution too, not just the lookup: resolving is the part
+// that can reach OCI, so paying for it while discarding the result would be the worst of both.
+func TestResolveImageForDiscovery_DisabledDoesNoWork(t *testing.T) {
+	fake := &fakeImageProvider{imageID: testImageID}
+	p := &DefaultProvider{
+		discoveredCapacity: cache.NewDiscoveredCapacity(0), // 0 == disabled
+		imageProvider:      fake,
+	}
 
-	assert.Equal(t, modelled.Value(), it.Capacity.Memory().Value())
+	assert.Equal(t, "", p.resolveImageForDiscovery(context.Background(), testShape, discoveryNodeClass(testImageID)))
+	assert.Empty(t, fake.gotShapes, "a disabled cache must not trigger image resolution at all")
+}
+
+// The resolver must be asked about the shape, not the synthetic instance type name: flexible
+// instance types are named Shape.<X>o.<Y>g.<Z>b, which no image is compatible with.
+func TestResolveImageForDiscovery_AsksForTheShape(t *testing.T) {
+	fake := &fakeImageProvider{imageID: testImageID}
+	p := &DefaultProvider{
+		discoveredCapacity: cache.NewDiscoveredCapacity(cache.DiscoveredCapacityTTL),
+		imageProvider:      fake,
+	}
+
+	p.resolveImageForDiscovery(context.Background(), testShape, discoveryNodeClass(testImageID))
+
+	assert.Equal(t, []string{testShape}, fake.gotShapes)
 }
 
 func TestApplyDiscoveredCapacity(t *testing.T) {
-	nc := discoveryNodeClass("ocid1.image.oc1..a")
 	modelled := resource.MustParse("32Gi")
 
 	t.Run("overrides the modelled value once measured", func(t *testing.T) {
@@ -257,7 +276,7 @@ func TestApplyDiscoveredCapacity(t *testing.T) {
 		it.Shape = testShape
 		it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
 
-		p.applyDiscoveredCapacity(context.Background(), it, nc)
+		p.applyDiscoveredCapacity(it, testImageID)
 
 		want := resource.MustParse("30890Mi")
 		assert.Equal(t, want.Value(), it.Capacity.Memory().Value())
@@ -271,7 +290,7 @@ func TestApplyDiscoveredCapacity(t *testing.T) {
 		it.Shape = testShape
 		it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
 
-		p.applyDiscoveredCapacity(context.Background(), it, nc)
+		p.applyDiscoveredCapacity(it, testImageID)
 
 		assert.Equal(t, modelled.Value(), it.Capacity.Memory().Value(),
 			"the first launch of a combination has nothing to learn from")
@@ -290,7 +309,7 @@ func TestDiscoveredCapacityDisabled(t *testing.T) {
 	it.Name = testInstanceTypeName
 	it.Shape = testShape
 	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
-	p.applyDiscoveredCapacity(context.Background(), it, nc)
+	p.applyDiscoveredCapacity(it, testImageID)
 
 	want := resource.MustParse("32Gi")
 	assert.Equal(t, want.Value(), it.Capacity.Memory().Value())
@@ -351,7 +370,7 @@ func TestUpdateInstanceTypeCapacityFromNode_OldImageDoesNotLeak(t *testing.T) {
 	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
 
 	// The shape now resolves to testImageID, so the superseded measurement must not be used.
-	p.applyDiscoveredCapacity(ctx, it, nc)
+	p.applyDiscoveredCapacity(it, testImageID)
 
 	want := resource.MustParse("32Gi")
 	assert.Equal(t, want.Value(), it.Capacity.Memory().Value(),
@@ -431,7 +450,7 @@ func TestDecorateInstanceType_AppliesDiscoveredCapacity(t *testing.T) {
 	// Without a measurement, the modelled figure stands.
 	modelled := newProvider()
 	it := newInstanceType()
-	_ = modelled.decorateInstanceType(context.Background(), it, nodeClass, shapeAndAd, nil)
+	_ = modelled.decorateInstanceType(context.Background(), it, nodeClass, shapeAndAd, nil, testImageID)
 	modelledMemory := it.Capacity.Memory().Value()
 	assert.NotZero(t, modelledMemory)
 
@@ -442,7 +461,7 @@ func TestDecorateInstanceType_AppliesDiscoveredCapacity(t *testing.T) {
 		discoveredCapacityCacheKey("VM.Standard.E4.Flex", testImageID), measured)
 
 	it = newInstanceType()
-	_ = discovered.decorateInstanceType(context.Background(), it, nodeClass, shapeAndAd, nil)
+	_ = discovered.decorateInstanceType(context.Background(), it, nodeClass, shapeAndAd, nil, testImageID)
 
 	assert.Equal(t, measured.Value(), it.Capacity.Memory().Value(),
 		"decorateInstanceType must prefer the measured capacity over the modelled one")

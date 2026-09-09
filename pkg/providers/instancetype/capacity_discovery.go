@@ -14,6 +14,7 @@ import (
 
 	ociv1beta1 "github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
 	v1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	corev1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -59,35 +60,46 @@ func (p *DefaultProvider) UpdateInstanceTypeCapacityFromNode(ctx context.Context
 	return nil
 }
 
-// applyDiscoveredCapacity overrides an instance type's modelled memory with a measured value when
-// one is known for the image this instance type would actually launch with. It is a no-op until a
-// node of that combination has registered, so the modelled figure governs only the first launch.
+// resolveImageForDiscovery returns the image the given shape would launch with, or "" if that
+// cannot be established. It is resolved exactly as CloudProvider.Create resolves it, so the key
+// derived from it matches the key the measurement was filed under.
 //
-// The image is resolved exactly as CloudProvider.Create resolves it, so the key used here matches
-// the key the measurement was filed under. Resolution failures are swallowed: capacity discovery
-// is an optimisation over the modelled estimate, and scheduling must not depend on the image API
-// being reachable.
+// It returns "" rather than an error, and does no work at all when discovery is switched off,
+// because this sits on the scheduling path: capacity discovery is an optimisation over the
+// modelled estimate, and neither scheduling nor its latency should depend on the image API.
+func (p *DefaultProvider) resolveImageForDiscovery(ctx context.Context, shape string,
+	nodeClass *ociv1beta1.OCINodeClass) string {
+	if !p.discoveredCapacity.Enabled() || p.imageProvider == nil || nodeClass == nil {
+		return ""
+	}
+	if nodeClass.Spec.VolumeConfig == nil || nodeClass.Spec.VolumeConfig.BootVolumeConfig == nil {
+		return ""
+	}
+
+	resolved, err := p.imageProvider.ResolveImageForShape(ctx,
+		nodeClass.Spec.VolumeConfig.BootVolumeConfig.ImageConfig, shape)
+	if err != nil || resolved == nil || len(resolved.Images) == 0 || resolved.Images[0].Id == nil {
+		log.FromContext(ctx).V(1).Info("skipping discovered capacity: cannot resolve image for shape",
+			"shape", shape)
+		return ""
+	}
+
+	return *resolved.Images[0].Id
+}
+
+// applyDiscoveredCapacity overrides an instance type's modelled memory with a value measured on a
+// node of the same instance type and image. It is a no-op until such a node has registered, so the
+// modelled figure governs only the first launch of a combination.
 //
 // Overhead (kubeReserved, eviction thresholds) is deliberately left as modelled. It is derived
 // from the shape's declared memory, which is slightly larger than the real figure, so the reserve
 // is marginally generous and allocatable stays on the conservative side.
-func (p *DefaultProvider) applyDiscoveredCapacity(ctx context.Context, it *OciInstanceType,
-	nodeClass *ociv1beta1.OCINodeClass) {
-	if p.discoveredCapacity == nil || p.imageProvider == nil || nodeClass == nil || it.Capacity == nil {
-		return
-	}
-	if nodeClass.Spec.VolumeConfig == nil || nodeClass.Spec.VolumeConfig.BootVolumeConfig == nil {
+func (p *DefaultProvider) applyDiscoveredCapacity(it *OciInstanceType, imageID string) {
+	if imageID == "" || it.Capacity == nil {
 		return
 	}
 
-	resolved, err := p.imageProvider.ResolveImageForShape(ctx,
-		nodeClass.Spec.VolumeConfig.BootVolumeConfig.ImageConfig, it.Shape)
-	if err != nil || resolved == nil || len(resolved.Images) == 0 || resolved.Images[0].Id == nil {
-		// No image, no key. Fall back to the modelled estimate, which is deliberately conservative.
-		return
-	}
-
-	if discovered, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(it.Name, *resolved.Images[0].Id)); ok {
+	if discovered, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(it.Name, imageID)); ok {
 		it.Capacity[v1.ResourceMemory] = discovered
 	}
 }

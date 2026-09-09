@@ -39,9 +39,9 @@ const (
 	//   - Recording keeps the smallest value seen, so an entry can never recover upward. One
 	//     unusually small node would otherwise suppress that combination's capacity permanently,
 	//     with no path back. Expiry is what allows it to be re-learned.
-	//   - The key includes the image candidate list, so changing that list strands the previous
-	//     entries rather than overwriting them. Without expiry those orphans accumulate for the
-	//     lifetime of the process.
+	//   - The key includes the image, so entries for an image that is no longer selected are never
+	//     read again rather than being overwritten. Without expiry those orphans accumulate for
+	//     the lifetime of the process.
 	//   - A host firmware or hypervisor change can alter what a shape presents to the guest
 	//     without changing anything in the key, so nothing else would invalidate the entry.
 	//

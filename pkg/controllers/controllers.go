@@ -11,9 +11,9 @@ import (
 	"context"
 
 	"github.com/awslabs/operatorpkg/controller"
+	"github.com/oracle/karpenter-provider-oci/pkg/controllers/instancetype/capacity"
 	"github.com/oracle/karpenter-provider-oci/pkg/controllers/nodeclasses"
 	"github.com/oracle/karpenter-provider-oci/pkg/controllers/orphaninstance"
-	"github.com/oracle/karpenter-provider-oci/pkg/controllers/instancetype/capacity"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/capacityreservation"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/clusterplacementgroup"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/computecluster"

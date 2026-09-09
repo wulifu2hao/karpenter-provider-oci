@@ -14,8 +14,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strings"
+	"time"
 
 	ociv1beta1 "github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
 	"github.com/oracle/karpenter-provider-oci/pkg/cache"
@@ -53,6 +55,9 @@ type Options struct {
 	setFlags                                         map[string]bool
 	parsed                                           bool
 }
+
+// maxDiscoveredCapacityTTLHours is the largest value that survives conversion to a time.Duration.
+const maxDiscoveredCapacityTTLHours = int(math.MaxInt64 / int64(time.Hour))
 
 type optionsKey struct{}
 
@@ -236,8 +241,12 @@ func (o *Options) Validate() error {
 	if o.UnavailableOfferingsTTLSeconds < 0 {
 		return errors.New("unavailable-offerings-ttl-seconds must be zero (to disable) or a positive integer")
 	}
-	if o.DiscoveredCapacityTTLHours < 0 {
-		return errors.New("discovered-capacity-ttl-hours must be zero (to disable) or a positive integer")
+	// The upper bound matters as much as the lower one: the value is multiplied by time.Hour, and
+	// anything past this overflows int64 nanoseconds. 2^51 hours, for instance, wraps to exactly
+	// zero, which would silently disable the feature rather than reject the setting.
+	if o.DiscoveredCapacityTTLHours < 0 || o.DiscoveredCapacityTTLHours > maxDiscoveredCapacityTTLHours {
+		return fmt.Errorf("discovered-capacity-ttl-hours must be zero (to disable) or a positive "+
+			"integer no greater than %d", maxDiscoveredCapacityTTLHours)
 	}
 	if o.RateLimitQPSRead < 0 {
 		return errors.New("rate-limit-qps-read must be greater than or equal to 0")

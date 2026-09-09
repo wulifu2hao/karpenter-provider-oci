@@ -27,6 +27,7 @@ import (
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/clusterplacementgroup"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/computecluster"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/identity"
+	"github.com/oracle/karpenter-provider-oci/pkg/providers/image"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/network"
 	"github.com/oracle/karpenter-provider-oci/pkg/utils"
 	ocicore "github.com/oracle/oci-go-sdk/v65/core"
@@ -86,6 +87,7 @@ type DefaultProvider struct {
 	ipFamilies                    []network.IpFamily
 	unavailableOfferings          *cache.UnavailableOfferings
 	discoveredCapacity            *cache.DiscoveredCapacity
+	imageProvider                 image.Provider
 
 	lock sync.RWMutex
 }
@@ -106,6 +108,7 @@ func New(ctx context.Context,
 	ipFamilies []network.IpFamily,
 	unavailableOfferings *cache.UnavailableOfferings,
 	discoveredCapacity *cache.DiscoveredCapacity,
+	imageProvider image.Provider,
 	startAsync <-chan struct{}) (*DefaultProvider, error) {
 	p := &DefaultProvider{
 		region:                        region,
@@ -123,6 +126,7 @@ func New(ctx context.Context,
 		kubernetesInterface:           kubernetesInterface,
 		unavailableOfferings:          unavailableOfferings,
 		discoveredCapacity:            discoveredCapacity,
+		imageProvider:                 imageProvider,
 	}
 
 	p.GlobalShapeConfigs = lo.Map(globalShapeConfigs, func(item ociv1beta1.ShapeConfig, _ int) *ociv1beta1.ShapeConfig {
@@ -321,7 +325,7 @@ func (p *DefaultProvider) decorateInstanceType(ctx context.Context, it *OciInsta
 	// Prefer memory actually measured on a node of this kind over the modelled figure.
 	// Applied after setCapacity rather than inside it so that the estimate stays a single,
 	// self-contained calculation and discovery is visibly an override of it.
-	p.applyDiscoveredCapacity(it, nodeClass)
+	p.applyDiscoveredCapacity(ctx, it, nodeClass)
 
 	basePrice, priceAvailable := p.calculatePrices(shape, ocpu, memoryInGbs, cpuBaseline)
 

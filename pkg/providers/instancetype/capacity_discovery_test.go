@@ -15,6 +15,7 @@ import (
 
 	ociv1beta1 "github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
 	"github.com/oracle/karpenter-provider-oci/pkg/cache"
+	"github.com/oracle/karpenter-provider-oci/pkg/providers/image"
 	ocicore "github.com/oracle/oci-go-sdk/v65/core"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
@@ -24,10 +25,43 @@ import (
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 )
 
-const testInstanceTypeName = "VM.Standard.E5.Flex.8o.32g.1_1b"
+const (
+	testInstanceTypeName = "VM.Standard.E5.Flex.8o.32g.1_1b"
+	testShape            = "VM.Standard.E5.Flex"
+	testImageID          = "ocid1.image.oc1..a"
+)
+
+// fakeImageProvider resolves every shape to one image, or fails, so the read path's dependency on
+// image resolution can be exercised without OCI.
+type fakeImageProvider struct {
+	imageID string
+	err     error
+}
+
+func (f *fakeImageProvider) ResolveImages(context.Context, *ociv1beta1.ImageConfig) (*image.ImageResolveResult, error) {
+	return f.resolve()
+}
+
+func (f *fakeImageProvider) ResolveImageForShape(context.Context, *ociv1beta1.ImageConfig, string) (*image.ImageResolveResult, error) {
+	return f.resolve()
+}
+
+func (f *fakeImageProvider) resolve() (*image.ImageResolveResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &image.ImageResolveResult{Images: []*ocicore.Image{{Id: lo.ToPtr(f.imageID)}}}, nil
+}
 
 func discoveryNodeClass(imageIDs ...string) *ociv1beta1.OCINodeClass {
 	return &ociv1beta1.OCINodeClass{
+		Spec: ociv1beta1.OCINodeClassSpec{
+			VolumeConfig: &ociv1beta1.VolumeConfig{
+				BootVolumeConfig: &ociv1beta1.BootVolumeConfig{
+					ImageConfig: &ociv1beta1.ImageConfig{},
+				},
+			},
+		},
 		Status: ociv1beta1.OCINodeClassStatus{
 			Volume: &ociv1beta1.Volume{
 				ImageCandidates: lo.Map(imageIDs, func(id string, _ int) *ociv1beta1.Image {
@@ -54,7 +88,10 @@ func discoveryNodeClaim(imageID string) *corev1.NodeClaim {
 }
 
 func discoveryProvider() *DefaultProvider {
-	return &DefaultProvider{discoveredCapacity: cache.NewDiscoveredCapacity(cache.DiscoveredCapacityTTL)}
+	return &DefaultProvider{
+		discoveredCapacity: cache.NewDiscoveredCapacity(cache.DiscoveredCapacityTTL),
+		imageProvider:      &fakeImageProvider{imageID: testImageID},
+	}
 }
 
 // A node reporting less memory than was modelled is the whole point: record it so the next launch
@@ -67,7 +104,7 @@ func TestUpdateInstanceTypeCapacityFromNode_RecordsObservedMemory(t *testing.T) 
 		discoveryNode(testInstanceTypeName, "30890Mi"), discoveryNodeClaim("ocid1.image.oc1..a"), nc)
 	assert.NoError(t, err)
 
-	got, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, nc))
+	got, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, testImageID))
 	assert.True(t, ok, "expected the observation to be recorded")
 	want := resource.MustParse("30890Mi")
 	assert.Equal(t, want.Value(), got.Value())
@@ -80,7 +117,7 @@ func TestUpdateInstanceTypeCapacityFromNode_KeepsSmallestObserved(t *testing.T) 
 	p := discoveryProvider()
 	nc := discoveryNodeClass("ocid1.image.oc1..a")
 	ctx := context.Background()
-	key := discoveredCapacityCacheKey(testInstanceTypeName, nc)
+	key := discoveredCapacityCacheKey(testInstanceTypeName, testImageID)
 
 	for _, mem := range []string{"30890Mi", "30800Mi", "31000Mi"} {
 		assert.NoError(t, p.UpdateInstanceTypeCapacityFromNode(ctx,
@@ -110,13 +147,6 @@ func TestUpdateInstanceTypeCapacityFromNode_Skips(t *testing.T) {
 			reason:    "there is nothing to key the measurement on",
 		},
 		{
-			name:      "image no longer a candidate",
-			node:      discoveryNode(testInstanceTypeName, "30890Mi"),
-			nodeClaim: discoveryNodeClaim("ocid1.image.oc1..old"),
-			nodeClass: discoveryNodeClass("ocid1.image.oc1..new"),
-			reason:    "the old image's memory says nothing about the new one",
-		},
-		{
 			name:      "nodeclaim has no image id",
 			node:      discoveryNode(testInstanceTypeName, "30890Mi"),
 			nodeClaim: discoveryNodeClaim(""),
@@ -132,7 +162,7 @@ func TestUpdateInstanceTypeCapacityFromNode_Skips(t *testing.T) {
 			assert.NoError(t, p.UpdateInstanceTypeCapacityFromNode(
 				context.Background(), tt.node, tt.nodeClaim, tt.nodeClass))
 
-			_, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, tt.nodeClass))
+			_, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, testImageID))
 			assert.False(t, ok, "must not record: %s", tt.reason)
 		})
 	}
@@ -149,26 +179,68 @@ func TestUpdateInstanceTypeCapacityFromNode_NilInputs(t *testing.T) {
 		discoveryNodeClaim("a"), nil))
 }
 
-// The image half of the key exists so that a measurement taken under one image is never served
-// after the candidate list changes.
+// The key names the image a node actually booted, so a measurement taken under one image is never
+// served for another.
 func TestDiscoveredCapacityCacheKey(t *testing.T) {
-	a := discoveryNodeClass("ocid1.image.oc1..a")
-	b := discoveryNodeClass("ocid1.image.oc1..b")
+	const a, b = "ocid1.image.oc1..a", "ocid1.image.oc1..b"
 
 	assert.Equal(t, discoveredCapacityCacheKey(testInstanceTypeName, a),
 		discoveredCapacityCacheKey(testInstanceTypeName, a), "key must be stable")
 	assert.NotEqual(t, discoveredCapacityCacheKey(testInstanceTypeName, a),
-		discoveredCapacityCacheKey(testInstanceTypeName, b), "a different image must not reuse the entry")
+		discoveredCapacityCacheKey(testInstanceTypeName, b),
+		"a different image must not reuse the entry")
 	assert.NotEqual(t, discoveredCapacityCacheKey(testInstanceTypeName, a),
 		discoveredCapacityCacheKey("VM.Standard.E5.Flex.4o.16g.1_1b", a),
 		"a different instance type must not reuse the entry")
+}
 
-	// Image selection walks the sorted candidates and takes the first compatible one, so a
-	// reordered list can resolve to a different image and must key differently.
-	assert.NotEqual(t,
-		discoveredCapacityCacheKey(testInstanceTypeName, discoveryNodeClass("a", "b")),
-		discoveredCapacityCacheKey(testInstanceTypeName, discoveryNodeClass("b", "a")),
-		"candidate order affects which image is chosen, so it must affect the key")
+// Naming the resolved image rather than the NodeClass's whole candidate list is the point of the
+// key: OKE publishes images regularly, and a key derived from the list would discard every learned
+// value each time one appeared, including for shapes whose selection did not change.
+func TestDiscoveredCapacity_UnrelatedImageDoesNotInvalidate(t *testing.T) {
+	p := discoveryProvider()
+	nc := discoveryNodeClass(testImageID)
+	ctx := context.Background()
+
+	assert.NoError(t, p.UpdateInstanceTypeCapacityFromNode(ctx,
+		discoveryNode(testInstanceTypeName, "30890Mi"), discoveryNodeClaim(testImageID), nc))
+
+	// A new image is published and joins the candidate list, but this shape still selects the same
+	// one, so the measurement must still be found.
+	nc.Status.Volume.ImageCandidates = append(nc.Status.Volume.ImageCandidates,
+		&ociv1beta1.Image{ImageId: "ocid1.image.oc1..newly-published"})
+
+	it := &OciInstanceType{}
+	it.Name = testInstanceTypeName
+	it.Shape = testShape
+	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
+
+	p.applyDiscoveredCapacity(ctx, it, nc)
+
+	want := resource.MustParse("30890Mi")
+	assert.Equal(t, want.Value(), it.Capacity.Memory().Value(),
+		"an unrelated image joining the candidate list must not discard what we learned")
+}
+
+// Scheduling must not depend on the image API being reachable: if resolution fails there is no key
+// to look under, and the modelled estimate - which is deliberately conservative - stands.
+func TestApplyDiscoveredCapacity_ImageResolutionFailureKeepsEstimate(t *testing.T) {
+	p := discoveryProvider()
+	nc := discoveryNodeClass(testImageID)
+	modelled := resource.MustParse("32Gi")
+
+	p.discoveredCapacity.Record(context.Background(),
+		discoveredCapacityCacheKey(testInstanceTypeName, testImageID), resource.MustParse("30890Mi"))
+	p.imageProvider = &fakeImageProvider{err: assert.AnError}
+
+	it := &OciInstanceType{}
+	it.Name = testInstanceTypeName
+	it.Shape = testShape
+	it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
+
+	p.applyDiscoveredCapacity(context.Background(), it, nc)
+
+	assert.Equal(t, modelled.Value(), it.Capacity.Memory().Value())
 }
 
 func TestApplyDiscoveredCapacity(t *testing.T) {
@@ -178,13 +250,14 @@ func TestApplyDiscoveredCapacity(t *testing.T) {
 	t.Run("overrides the modelled value once measured", func(t *testing.T) {
 		p := discoveryProvider()
 		p.discoveredCapacity.Record(context.Background(),
-			discoveredCapacityCacheKey(testInstanceTypeName, nc), resource.MustParse("30890Mi"))
+			discoveredCapacityCacheKey(testInstanceTypeName, testImageID), resource.MustParse("30890Mi"))
 
 		it := &OciInstanceType{}
 		it.Name = testInstanceTypeName
+		it.Shape = testShape
 		it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
 
-		p.applyDiscoveredCapacity(it, nc)
+		p.applyDiscoveredCapacity(context.Background(), it, nc)
 
 		want := resource.MustParse("30890Mi")
 		assert.Equal(t, want.Value(), it.Capacity.Memory().Value())
@@ -195,9 +268,10 @@ func TestApplyDiscoveredCapacity(t *testing.T) {
 
 		it := &OciInstanceType{}
 		it.Name = testInstanceTypeName
+		it.Shape = testShape
 		it.Capacity = v1.ResourceList{v1.ResourceMemory: modelled}
 
-		p.applyDiscoveredCapacity(it, nc)
+		p.applyDiscoveredCapacity(context.Background(), it, nc)
 
 		assert.Equal(t, modelled.Value(), it.Capacity.Memory().Value(),
 			"the first launch of a combination has nothing to learn from")
@@ -214,8 +288,9 @@ func TestDiscoveredCapacityDisabled(t *testing.T) {
 
 	it := &OciInstanceType{}
 	it.Name = testInstanceTypeName
+	it.Shape = testShape
 	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
-	p.applyDiscoveredCapacity(it, nc)
+	p.applyDiscoveredCapacity(context.Background(), it, nc)
 
 	want := resource.MustParse("32Gi")
 	assert.Equal(t, want.Value(), it.Capacity.Memory().Value())
@@ -231,7 +306,7 @@ func TestUpdateInstanceTypeCapacityFromNode_RetriesWhenMemoryNotReported(t *test
 		discoveryNode(testInstanceTypeName, ""), discoveryNodeClaim("ocid1.image.oc1..a"), nc)
 
 	assert.ErrorIs(t, err, ErrCapacityNotReported)
-	_, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, nc))
+	_, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, testImageID))
 	assert.False(t, ok, "nothing should be recorded from a node that reported no memory")
 }
 
@@ -257,20 +332,35 @@ func TestDiscoveredCapacity_EqualObservationRefreshesTTL(t *testing.T) {
 	assert.False(t, ok, "the entry must still expire once observations stop")
 }
 
-// Pins the known limit of the membership-based staleness guard, so that its behaviour is a
-// deliberate choice rather than an accident: an image that is still a candidate is trusted even
-// when the candidate list has changed since the node launched. See imageIsCurrent for why this is
-// bounded and self-correcting.
-func TestUpdateInstanceTypeCapacityFromNode_TrustsAnyCurrentCandidate(t *testing.T) {
+// With the image in the key, a node that booted an image the NodeClass has since stopped selecting
+// files its measurement under that old image. Nothing looks there, so it neither leaks into the
+// current image's estimate nor needs a staleness guard to suppress it.
+func TestUpdateInstanceTypeCapacityFromNode_OldImageDoesNotLeak(t *testing.T) {
 	p := discoveryProvider()
-	// Node launched from "old"; the list has since gained "new" ahead of it.
-	nc := discoveryNodeClass("ocid1.image.oc1..new", "ocid1.image.oc1..old")
+	nc := discoveryNodeClass(testImageID)
+	ctx := context.Background()
 
-	assert.NoError(t, p.UpdateInstanceTypeCapacityFromNode(context.Background(),
-		discoveryNode(testInstanceTypeName, "30890Mi"), discoveryNodeClaim("ocid1.image.oc1..old"), nc))
+	// A node launched earlier, from an image this NodeClass no longer selects.
+	assert.NoError(t, p.UpdateInstanceTypeCapacityFromNode(ctx,
+		discoveryNode(testInstanceTypeName, "20000Mi"),
+		discoveryNodeClaim("ocid1.image.oc1..superseded"), nc))
 
-	_, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(testInstanceTypeName, nc))
-	assert.True(t, ok, "membership is the guard; tightening this needs an OCI call on the read path")
+	it := &OciInstanceType{}
+	it.Name = testInstanceTypeName
+	it.Shape = testShape
+	it.Capacity = v1.ResourceList{v1.ResourceMemory: resource.MustParse("32Gi")}
+
+	// The shape now resolves to testImageID, so the superseded measurement must not be used.
+	p.applyDiscoveredCapacity(ctx, it, nc)
+
+	want := resource.MustParse("32Gi")
+	assert.Equal(t, want.Value(), it.Capacity.Memory().Value(),
+		"a measurement from a superseded image must not be served for the current one")
+
+	// It is still filed under its own image, which is what makes the guard unnecessary.
+	_, ok := p.discoveredCapacity.Get(
+		discoveredCapacityCacheKey(testInstanceTypeName, "ocid1.image.oc1..superseded"))
+	assert.True(t, ok)
 }
 
 // Smallest-wins must hold under concurrent writers, not only the serialised controller.
@@ -319,6 +409,7 @@ func TestDecorateInstanceType_AppliesDiscoveredCapacity(t *testing.T) {
 			},
 			preemptibleShapes:  PreemptibleShapes{"VM.STANDARD.E4": "VM.Standard.E4"},
 			discoveredCapacity: cache.NewDiscoveredCapacity(cache.DiscoveredCapacityTTL),
+			imageProvider:      &fakeImageProvider{imageID: testImageID},
 		}
 	}
 	shapeAndAd := &ShapeAndAd{
@@ -348,7 +439,7 @@ func TestDecorateInstanceType_AppliesDiscoveredCapacity(t *testing.T) {
 	discovered := newProvider()
 	measured := resource.MustParse("30890Mi")
 	discovered.discoveredCapacity.Record(context.Background(),
-		discoveredCapacityCacheKey("VM.Standard.E4.Flex", nodeClass), measured)
+		discoveredCapacityCacheKey("VM.Standard.E4.Flex", testImageID), measured)
 
 	it = newInstanceType()
 	_ = discovered.decorateInstanceType(context.Background(), it, nodeClass, shapeAndAd, nil)

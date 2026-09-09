@@ -138,6 +138,9 @@ func createOperator(ctx context.Context, coreOp *operator.Operator,
 	discoveredCapacity := cache.NewDiscoveredCapacity(
 		time.Duration(ociOptions.DiscoveredCapacityTTLHours) * time.Hour)
 
+	imageProvider := lo.Must(image.NewProvider(ctx, clientSet, ociClient,
+		ociOptions.PreBakedImageCompartmentId, "", coreOp.Elected()))
+
 	instanceTypeProvider := lo.Must(instancetype.New(ctx, region, ociOptions.ClusterCompartmentId,
 		ociClient, identityProvider, clientSet, coreOp.GetAPIReader(),
 		capacityReservationProvider, computeClusterProvider, clusterPlacementGroupProvider,
@@ -145,6 +148,7 @@ func createOperator(ctx context.Context, coreOp *operator.Operator,
 		ociOptions.IpFamiliesFlag.IpFamilies,
 		unavailableOfferings,
 		discoveredCapacity,
+		imageProvider,
 		coreOp.Elected()))
 
 	driftCaches := instance.NewDriftCaches()
@@ -165,9 +169,6 @@ func createOperator(ctx context.Context, coreOp *operator.Operator,
 		ociOptions.ClusterCompartmentId, instanceMetadataProvider, driftCaches,
 		vmTimeout, bmTimeout, ociOptions.InstanceLaunchTimeOutFailOver, instancePollInterval,
 		unavailableOfferings, ociOptions.EnableUnavailableOfferingsOnServiceLimitExceeded))
-
-	imageProvider := lo.Must(image.NewProvider(ctx, clientSet, ociClient,
-		ociOptions.PreBakedImageCompartmentId, "", coreOp.Elected()))
 
 	kmsKeyProvider := lo.Must(kms.NewProvider(ctx, ociOptions.ClusterCompartmentId, configProvider, &rateLimiter))
 

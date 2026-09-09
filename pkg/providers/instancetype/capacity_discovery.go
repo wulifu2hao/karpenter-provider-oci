@@ -12,9 +12,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mitchellh/hashstructure/v2"
 	ociv1beta1 "github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
-	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	corev1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
@@ -42,10 +40,10 @@ func (p *DefaultProvider) UpdateInstanceTypeCapacityFromNode(ctx context.Context
 		return nil
 	}
 
-	// Only trust the measurement if the image the node booted from is still one this NodeClass
-	// would choose. After an image update the previous image's memory is not evidence about the
-	// new one, and the entry would otherwise outlive the image it describes.
-	if !imageIsCurrent(nodeClaim.Status.ImageID, nodeClass) {
+	// Label the measurement with the image this node actually booted from, taken from the launched
+	// instance rather than re-resolved. Re-resolving would be wrong: if selection moved between
+	// launch and registration, we would file this node's memory under an image it never ran.
+	if nodeClaim.Status.ImageID == "" {
 		return nil
 	}
 
@@ -57,55 +55,53 @@ func (p *DefaultProvider) UpdateInstanceTypeCapacityFromNode(ctx context.Context
 		return ErrCapacityNotReported
 	}
 
-	p.discoveredCapacity.Record(ctx, discoveredCapacityCacheKey(instanceTypeName, nodeClass), capacity)
+	p.discoveredCapacity.Record(ctx, discoveredCapacityCacheKey(instanceTypeName, nodeClaim.Status.ImageID), capacity)
 	return nil
 }
 
 // applyDiscoveredCapacity overrides an instance type's modelled memory with a measured value when
-// one is known. It is a no-op until a node of that combination has registered, so the modelled
-// figure governs only the first launch.
+// one is known for the image this instance type would actually launch with. It is a no-op until a
+// node of that combination has registered, so the modelled figure governs only the first launch.
+//
+// The image is resolved exactly as CloudProvider.Create resolves it, so the key used here matches
+// the key the measurement was filed under. Resolution failures are swallowed: capacity discovery
+// is an optimisation over the modelled estimate, and scheduling must not depend on the image API
+// being reachable.
 //
 // Overhead (kubeReserved, eviction thresholds) is deliberately left as modelled. It is derived
 // from the shape's declared memory, which is slightly larger than the real figure, so the reserve
 // is marginally generous and allocatable stays on the conservative side.
-func (p *DefaultProvider) applyDiscoveredCapacity(it *OciInstanceType, nodeClass *ociv1beta1.OCINodeClass) {
-	if p.discoveredCapacity == nil || nodeClass == nil || it.Capacity == nil {
+func (p *DefaultProvider) applyDiscoveredCapacity(ctx context.Context, it *OciInstanceType,
+	nodeClass *ociv1beta1.OCINodeClass) {
+	if p.discoveredCapacity == nil || p.imageProvider == nil || nodeClass == nil || it.Capacity == nil {
+		return
+	}
+	if nodeClass.Spec.VolumeConfig == nil || nodeClass.Spec.VolumeConfig.BootVolumeConfig == nil {
 		return
 	}
 
-	if discovered, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(it.Name, nodeClass)); ok {
+	resolved, err := p.imageProvider.ResolveImageForShape(ctx,
+		nodeClass.Spec.VolumeConfig.BootVolumeConfig.ImageConfig, it.Shape)
+	if err != nil || resolved == nil || len(resolved.Images) == 0 || resolved.Images[0].Id == nil {
+		// No image, no key. Fall back to the modelled estimate, which is deliberately conservative.
+		return
+	}
+
+	if discovered, ok := p.discoveredCapacity.Get(discoveredCapacityCacheKey(it.Name, *resolved.Images[0].Id)); ok {
 		it.Capacity[v1.ResourceMemory] = discovered
 	}
 }
 
-// imageIsCurrent reports whether imageID is still among the NodeClass's resolved image candidates.
+// discoveredCapacityCacheKey identifies a measurement by the instance type it was taken on and the
+// image that instance type booted.
 //
-// This is weaker than checking that the node's shape would resolve to precisely this image: OCI
-// expresses image/shape compatibility as a server-side relation rather than as requirements
-// recorded on the NodeClass, so establishing it here would cost an API call on a path that must
-// stay cheap.
+// The instance type name already encodes shape, OCPU, memory and CPU baseline, so for flexible
+// shapes it distinguishes configurations without further work.
 //
-// The gap it leaves is narrow and self-correcting. A change to the candidate list changes the cache
-// key, so entries never outlive the list they were measured under. What membership alone does not
-// catch is a list that changes between a node launching and registering: the node's image may still
-// be a candidate while no longer being the one its shape would now select, and its measurement is
-// then recorded under the new list's key. The next node launched from the newly selected image
-// records its own, and because the smallest observation wins, an over-estimate survives at most
-// until then - the same one-launch bound this mechanism offers generally.
-func imageIsCurrent(imageID string, nodeClass *ociv1beta1.OCINodeClass) bool {
-	if imageID == "" {
-		return false
-	}
-	if nodeClass.Status.Volume == nil {
-		return false
-	}
-
-	return lo.ContainsBy(nodeClass.Status.Volume.ImageCandidates, func(img *ociv1beta1.Image) bool {
-		return img != nil && img.ImageId == imageID
-	})
-}
-
-// discoveredCapacityCacheKey identifies an instance type together with the images it could boot.
+// Keying on the resolved image rather than on the NodeClass's whole candidate list means adding an
+// image to the list only affects the combinations whose selection actually changes; every other
+// learned value survives. OKE publishes images regularly, so a key that invalidated everything on
+// each publication would spend much of its life empty.
 //
 // Shape and image are an empirical grouping, not a documented OCI contract. Oracle publishes a
 // shape's allocated memory and image/shape compatibility, but not the memory a guest ends up
@@ -118,24 +114,6 @@ func imageIsCurrent(imageID string, nodeClass *ociv1beta1.OCINodeClass) bool {
 // The grouping does not have to be exact to be useful: Record keeps the smallest value observed
 // for a key, so if several host variants share one, the model converges on the least roomy of
 // them. A coarse key costs a little capacity; it does not cost correctness.
-//
-// The instance type name already encodes shape, OCPU, memory and CPU baseline, so for flexible
-// shapes it distinguishes configurations without further work.
-//
-// The image half hashes the whole candidate list rather than a single resolved image, so the key
-// can be computed while scheduling without asking OCI which image a shape would get. The hash is
-// order-sensitive on purpose: image selection walks the sorted candidates and takes the first
-// compatible one, so a reordered list can select a different image and must not reuse the same
-// entry.
-func discoveredCapacityCacheKey(instanceTypeName string, nodeClass *ociv1beta1.OCINodeClass) string {
-	var candidates []*ociv1beta1.Image
-	if nodeClass.Status.Volume != nil {
-		candidates = nodeClass.Status.Volume.ImageCandidates
-	}
-
-	hash, _ := hashstructure.Hash(candidates, hashstructure.FormatV2, &hashstructure.HashOptions{
-		SlicesAsSets: false,
-	})
-
-	return fmt.Sprintf("%s-%016x", instanceTypeName, hash)
+func discoveredCapacityCacheKey(instanceTypeName, imageID string) string {
+	return fmt.Sprintf("%s-%s", instanceTypeName, imageID)
 }

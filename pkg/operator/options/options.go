@@ -134,8 +134,8 @@ Example in a JSON format:
 		int(cache.DiscoveredCapacityTTL.Hours()),
 		"How long, in hours, memory capacity measured on a registered node is reused when modelling "+
 			"later launches of the same instance type and image. Set to 0 to disable capacity "+
-			"discovery, in which case every launch is modelled from the configured VM memory "+
-			"overhead instead")
+			"discovery: the node-watching controller is not started, no image is resolved while "+
+			"scheduling, and every launch is modelled from the configured VM memory overhead")
 	fs.BoolVar(&o.EnableUnavailableOfferingsOnServiceLimitExceeded,
 		"enable-unavailable-offerings-on-service-limit-exceeded", false,
 		"Mark offerings unavailable when OCI service limits are exceeded")

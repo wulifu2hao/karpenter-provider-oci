@@ -42,6 +42,11 @@ const capacityNotReportedRequeue = 15 * time.Second
 type CapacityProvider interface {
 	UpdateInstanceTypeCapacityFromNode(ctx context.Context, node *v1.Node,
 		nodeClaim *corev1.NodeClaim, nodeClass *ociv1beta1.OCINodeClass) error
+
+	// DiscoveryEnabled reports whether measurements are used at all. When they are not, this
+	// controller has nothing to contribute and is not registered, so a disabled feature costs no
+	// watch, no reconciles and no API reads.
+	DiscoveryEnabled() bool
 }
 
 // Controller feeds the memory capacity of registered nodes back into the instance type model.

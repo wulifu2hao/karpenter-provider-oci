@@ -55,11 +55,15 @@ func NewControllers(
 
 	orphanInstanceController := orphaninstance.NewController(ctx, kubeClient, clientSet, cloudProvider)
 
-	// Feeds memory observed on registered nodes back into the instance type model, so a launch
-	// that turns out too small corrects the next one instead of repeating indefinitely.
-	capacityController := capacity.NewController(kubeClient, cloudProvider, capacityProvider)
+	controllers = append(controllers, nodeClassController, orphanInstanceController)
 
-	controllers = append(controllers, nodeClassController, orphanInstanceController, capacityController)
+	// Feeds memory observed on registered nodes back into the instance type model, so a launch
+	// that turns out too small corrects the next one instead of repeating indefinitely. Skipped
+	// entirely when capacity discovery is switched off: otherwise it would keep watching nodes and
+	// reading NodeClaims and NodeClasses to produce measurements nothing would store.
+	if capacityProvider.DiscoveryEnabled() {
+		controllers = append(controllers, capacity.NewController(kubeClient, cloudProvider, capacityProvider))
+	}
 
 	return controllers
 }

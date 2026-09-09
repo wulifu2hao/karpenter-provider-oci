@@ -60,6 +60,11 @@ func (p *DefaultProvider) UpdateInstanceTypeCapacityFromNode(ctx context.Context
 	return nil
 }
 
+// DiscoveryEnabled reports whether measured capacity is used at all.
+func (p *DefaultProvider) DiscoveryEnabled() bool {
+	return p.discoveredCapacity.Enabled() && p.imageProvider != nil
+}
+
 // resolveImageForDiscovery returns the image the given shape would launch with, or "" if that
 // cannot be established. It is resolved exactly as CloudProvider.Create resolves it, so the key
 // derived from it matches the key the measurement was filed under.
@@ -69,7 +74,7 @@ func (p *DefaultProvider) UpdateInstanceTypeCapacityFromNode(ctx context.Context
 // modelled estimate, and neither scheduling nor its latency should depend on the image API.
 func (p *DefaultProvider) resolveImageForDiscovery(ctx context.Context, shape string,
 	nodeClass *ociv1beta1.OCINodeClass) string {
-	if !p.discoveredCapacity.Enabled() || p.imageProvider == nil || nodeClass == nil {
+	if !p.DiscoveryEnabled() || nodeClass == nil {
 		return ""
 	}
 	if nodeClass.Spec.VolumeConfig == nil || nodeClass.Spec.VolumeConfig.BootVolumeConfig == nil {

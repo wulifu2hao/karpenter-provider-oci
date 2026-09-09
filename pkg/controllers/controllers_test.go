@@ -11,6 +11,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/awslabs/operatorpkg/controller"
 	"github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
 	"github.com/oracle/karpenter-provider-oci/pkg/fakes"
 	"github.com/oracle/karpenter-provider-oci/pkg/operator/options"
@@ -61,18 +62,28 @@ var _ = Describe("OCINodeClass Reconciler", func() {
 		cpgProvider := clusterplacementgroup.NewProvider(ctx, fakes.NewFakeClusterPlacementGroupClient(
 			nodeClassClusterCompartmentId), nodeClassClusterCompartmentId)
 
-		controllers := NewControllers(ctx, nil, nil, nil, fake.NewClientset(),
-			&fakes.FakeEventRecorder{}, imageProvider, kmsProvider, networkProvider, crProvider, computeClusterProvider,
-			identityProvider, cpgProvider, &fakes.FakeCloudProvider{}, &fakeCapacityProvider{},
-		)
+		newControllers := func(discoveryEnabled bool) []controller.Controller {
+			return NewControllers(ctx, nil, nil, nil, fake.NewClientset(),
+				&fakes.FakeEventRecorder{}, imageProvider, kmsProvider, networkProvider, crProvider,
+				computeClusterProvider, identityProvider, cpgProvider, &fakes.FakeCloudProvider{},
+				&fakeCapacityProvider{enabled: discoveryEnabled},
+			)
+		}
 
-		Expect(controllers).To(HaveLen(3))
+		Expect(newControllers(true)).To(HaveLen(3))
+
+		// Disabling capacity discovery must remove its controller, not merely neuter it: left
+		// registered it would keep watching nodes and reading NodeClaims and NodeClasses to
+		// produce measurements nothing would store.
+		Expect(newControllers(false)).To(HaveLen(2))
 	})
 })
 
 // fakeCapacityProvider stands in for the instance type provider's capacity discovery, which this
 // test does not exercise; it only needs NewControllers to wire something in.
-type fakeCapacityProvider struct{}
+type fakeCapacityProvider struct{ enabled bool }
+
+func (f *fakeCapacityProvider) DiscoveryEnabled() bool { return f.enabled }
 
 func (f *fakeCapacityProvider) UpdateInstanceTypeCapacityFromNode(_ context.Context, _ *corev1.Node,
 	_ *karpv1.NodeClaim, _ *v1beta1.OCINodeClass) error {

@@ -300,3 +300,24 @@ If you want to run OCI GO SDK in debug mode (Karpenter uses OCI GO SDK to intera
 
 ### Suggestions regarding KubeletConfig maxPods and podsPerCore
 The value assigned to "podsPerCore" must not exceed the "maxPods" value. Additionally, for environments in which the customer is utilizing an OciVcnIpNative cluster, the "maxPods" value should be less than the aggregate sum of "IpCount" from the secondary VNICs.
+
+### Why does the first node of a given size sometimes not fit the pod that asked for it?
+Karpenter has to choose a node size *before* the node exists, so it works from a model of what a node will have once it boots. If that model is too optimistic the pod that triggered the launch does not fit once the node registers, stays pending, and the same launch is made again.
+
+To stop that repeating, the provider learns from the nodes it creates. When a node registers, a controller reads its real `node.status.capacity.memory` and remembers it, keyed by the instance type and the image the node booted. Later launches of that same combination are modelled from the measurement instead of the estimate, so a bad estimate costs a node rather than an unbounded run of them.
+
+Two consequences worth knowing:
+
+- **The first launch of a given instance type and image is still modelled from the estimate**, since nothing has been measured yet. Only subsequent launches benefit.
+- **The measurements are held in memory**, so they are relearned after a controller restart or a leader change. Nodes that are still running are re-read at startup, so in practice the cache repopulates from the live fleet.
+
+The smallest value observed for a combination is the one kept: nodes of nominally the same kind can report slightly different totals, and modelling the smallest keeps Karpenter on the safe side.
+
+To turn this off and always model from the configured VM memory overhead, set the TTL to zero:
+
+```yaml
+settings:
+  discoveredCapacityTTLHours: 0
+```
+
+The default is `1440` hours (60 days). Entries expire rather than living forever because the smallest-wins rule means a value can never recover upward on its own, and because a host firmware or hypervisor change can alter what a shape presents without anything else invalidating the entry.

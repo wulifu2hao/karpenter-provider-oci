@@ -31,9 +31,22 @@ const (
 	UnavailableOfferingsCleanupInterval = time.Minute
 
 	// DiscoveredCapacityTTL is how long a memory capacity measured on a real node is reused for
-	// later launches of the same instance type and image. It is long because the value is a
-	// property of the shape and image rather than of the moment: it only changes when OCI changes
-	// what a shape presents to the guest, and a stale entry is re-measured on the next launch.
+	// later launches of the same instance type and image.
+	//
+	// It is long because the value is close to a property of the shape and image rather than of
+	// the moment. It expires at all for three reasons:
+	//
+	//   - Recording keeps the smallest value seen, so an entry can never recover upward. One
+	//     unusually small node would otherwise suppress that combination's capacity permanently,
+	//     with no path back. Expiry is what allows it to be re-learned.
+	//   - The key includes the image candidate list, so changing that list strands the previous
+	//     entries rather than overwriting them. Without expiry those orphans accumulate for the
+	//     lifetime of the process.
+	//   - A host firmware or hypervisor change can alter what a shape presents to the guest
+	//     without changing anything in the key, so nothing else would invalidate the entry.
+	//
+	// Set the TTL to zero to disable capacity discovery entirely; see
+	// --discovered-capacity-ttl-hours.
 	DiscoveredCapacityTTL = 60 * 24 * time.Hour
 	// DiscoveredCapacityCleanupInterval triggers cleanup of the discovered-capacity cache.
 	DiscoveredCapacityCleanupInterval = time.Hour

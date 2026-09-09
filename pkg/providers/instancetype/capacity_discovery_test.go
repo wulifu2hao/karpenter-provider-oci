@@ -467,3 +467,29 @@ func TestDecorateInstanceType_AppliesDiscoveredCapacity(t *testing.T) {
 		"decorateInstanceType must prefer the measured capacity over the modelled one")
 	assert.NotEqual(t, modelledMemory, it.Capacity.Memory().Value())
 }
+
+// DiscoveryEnabled is what decides whether the controller is registered at all, so tie it to a
+// provider built the way production builds one: from a TTL.
+func TestDiscoveryEnabled(t *testing.T) {
+	tests := []struct {
+		name          string
+		ttl           time.Duration
+		imageProvider image.Provider
+		want          bool
+	}{
+		{"default TTL", cache.DiscoveredCapacityTTL, &fakeImageProvider{imageID: testImageID}, true},
+		{"zero TTL disables", 0, &fakeImageProvider{imageID: testImageID}, false},
+		{"no image provider", cache.DiscoveredCapacityTTL, nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &DefaultProvider{
+				discoveredCapacity: cache.NewDiscoveredCapacity(tt.ttl),
+				imageProvider:      tt.imageProvider,
+			}
+
+			assert.Equal(t, tt.want, p.DiscoveryEnabled())
+		})
+	}
+}

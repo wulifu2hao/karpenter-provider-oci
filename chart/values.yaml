@@ -283,7 +283,7 @@ settings:
   # exists, so it starts from an estimate; once a node of that kind has registered, its real
   # capacity is used instead. Set to 0 to disable capacity discovery: the node-watching controller
   # is not started, no image is resolved while scheduling, and every launch is modelled from the
-  # configured VM memory overhead.
+  # shape's declared memory.
   discoveredCapacityTTLHours: 1440
 
   # -- Feature Gate configuration values. Feature Gates will follow the same graduation process and requirements as feature gates

@@ -13,6 +13,7 @@ import (
 
 	"github.com/awslabs/operatorpkg/controller"
 	"github.com/oracle/karpenter-provider-oci/pkg/apis/v1beta1"
+	"github.com/oracle/karpenter-provider-oci/pkg/controllers/instancetype/capacity"
 	"github.com/oracle/karpenter-provider-oci/pkg/fakes"
 	"github.com/oracle/karpenter-provider-oci/pkg/operator/options"
 	"github.com/oracle/karpenter-provider-oci/pkg/providers/capacityreservation"
@@ -70,12 +71,22 @@ var _ = Describe("OCINodeClass Reconciler", func() {
 			)
 		}
 
+		hasCapacityController := func(cs []controller.Controller) bool {
+			return lo.ContainsBy(cs, func(c controller.Controller) bool {
+				_, ok := c.(*capacity.Controller)
+				return ok
+			})
+		}
+
 		Expect(newControllers(true)).To(HaveLen(3))
+		Expect(hasCapacityController(newControllers(true))).To(BeTrue())
 
 		// Disabling capacity discovery must remove its controller, not merely neuter it: left
 		// registered it would keep watching nodes and reading NodeClaims and NodeClasses to
-		// produce measurements nothing would store.
+		// produce measurements nothing would store. Assert which controller went, so that
+		// dropping a different one would not pass.
 		Expect(newControllers(false)).To(HaveLen(2))
+		Expect(hasCapacityController(newControllers(false))).To(BeFalse())
 	})
 })
 

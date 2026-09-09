@@ -313,7 +313,7 @@ Two consequences worth knowing:
 
 The smallest value observed for a combination is the one kept: nodes of nominally the same kind can report slightly different totals, and modelling the smallest keeps Karpenter on the safe side.
 
-To turn this off, set the TTL to zero. Nothing is then measured, stored or applied: the controller that watches registering nodes is not started, no image is resolved while scheduling, and every launch is modelled from the configured VM memory overhead.
+To turn this off, set the TTL to zero. Nothing is then measured, stored or applied: the controller that watches registering nodes is not started, no image is resolved while scheduling, and every launch is modelled from the shape's declared memory.
 
 ```yaml
 settings:

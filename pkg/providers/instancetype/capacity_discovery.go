@@ -107,6 +107,18 @@ func imageIsCurrent(imageID string, nodeClass *ociv1beta1.OCINodeClass) bool {
 
 // discoveredCapacityCacheKey identifies an instance type together with the images it could boot.
 //
+// Shape and image are an empirical grouping, not a documented OCI contract. Oracle publishes a
+// shape's allocated memory and image/shape compatibility, but not the memory a guest ends up
+// seeing. The closest it comes is the Dedicated VM Host table, which does carry a "usable memory"
+// column and attributes the shortfall to "the need to reserve OCPUs and memory for hypervisor
+// use" - there is no equivalent column for the ordinary VM shapes this models:
+// https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm
+//
+// So other factors - host generation, firmware, hypervisor version - may also move the figure.
+// The grouping does not have to be exact to be useful: Record keeps the smallest value observed
+// for a key, so if several host variants share one, the model converges on the least roomy of
+// them. A coarse key costs a little capacity; it does not cost correctness.
+//
 // The instance type name already encodes shape, OCPU, memory and CPU baseline, so for flexible
 // shapes it distinguishes configurations without further work.
 //

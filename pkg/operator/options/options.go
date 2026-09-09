@@ -43,6 +43,7 @@ type Options struct {
 	InstanceOperationPollIntervalInSeconds           int
 	InstanceLaunchTimeOutFailOver                    bool
 	UnavailableOfferingsTTLSeconds                   int
+	DiscoveredCapacityTTLHours                       int
 	EnableUnavailableOfferingsOnServiceLimitExceeded bool
 	DisableRateLimiter                               bool
 	RateLimitQPSRead                                 float64
@@ -124,6 +125,12 @@ Example in a JSON format:
 		int(cache.UnavailableOfferingsTTL.Seconds()),
 		"How long, in seconds, an offering observed to be out of host capacity is treated as "+
 			"unavailable before Karpenter retries it. Set to 0 to disable the unavailable-offerings cache")
+	fs.IntVar(&o.DiscoveredCapacityTTLHours, "discovered-capacity-ttl-hours",
+		int(cache.DiscoveredCapacityTTL.Hours()),
+		"How long, in hours, memory capacity measured on a registered node is reused when modelling "+
+			"later launches of the same instance type and image. Set to 0 to disable capacity "+
+			"discovery, in which case every launch is modelled from the configured VM memory "+
+			"overhead instead")
 	fs.BoolVar(&o.EnableUnavailableOfferingsOnServiceLimitExceeded,
 		"enable-unavailable-offerings-on-service-limit-exceeded", false,
 		"Mark offerings unavailable when OCI service limits are exceeded")
@@ -228,6 +235,9 @@ func (o *Options) Validate() error {
 	}
 	if o.UnavailableOfferingsTTLSeconds < 0 {
 		return errors.New("unavailable-offerings-ttl-seconds must be zero (to disable) or a positive integer")
+	}
+	if o.DiscoveredCapacityTTLHours < 0 {
+		return errors.New("discovered-capacity-ttl-hours must be zero (to disable) or a positive integer")
 	}
 	if o.RateLimitQPSRead < 0 {
 		return errors.New("rate-limit-qps-read must be greater than or equal to 0")

@@ -2019,7 +2019,7 @@ func TestKubeReservedResources(t *testing.T) {
 			mem:   8,
 			nc:    &ociv1beta1.OCINodeClass{},
 			want: map[string]string{
-				"cpu":    "85m",
+				"cpu": "85m",
 				// 8 GiB shape -> 0.20*(8-4)+1 = 1.8 GiB reserved, in bytes (float32)
 				"memory": "1932735232",
 			},
@@ -2031,7 +2031,7 @@ func TestKubeReservedResources(t *testing.T) {
 			mem:   8,
 			nc:    &ociv1beta1.OCINodeClass{},
 			want: map[string]string{
-				"cpu":    "72m",
+				"cpu": "72m",
 				// 8 GiB shape -> 0.20*(8-4)+1 = 1.8 GiB reserved, in bytes (float32)
 				"memory": "1932735232",
 			},
@@ -2051,7 +2051,7 @@ func TestKubeReservedResources(t *testing.T) {
 				},
 			},
 			want: map[string]string{
-				"cpu":    "300m",
+				"cpu": "300m",
 				// 8 GiB shape -> 0.20*(8-4)+1 = 1.8 GiB reserved, in bytes (float32)
 				"memory": "1932735232",
 			},

@@ -135,7 +135,8 @@ func createOperator(ctx context.Context, coreOp *operator.Operator,
 
 	// memory measured on registered nodes, reused for later launches of the same instance type
 	// and image so a too-optimistic estimate cannot drive an unbounded launch loop.
-	discoveredCapacity := cache.NewDiscoveredCapacity(cache.DiscoveredCapacityTTL)
+	discoveredCapacity := cache.NewDiscoveredCapacity(
+		time.Duration(ociOptions.DiscoveredCapacityTTLHours) * time.Hour)
 
 	instanceTypeProvider := lo.Must(instancetype.New(ctx, region, ociOptions.ClusterCompartmentId,
 		ociClient, identityProvider, clientSet, coreOp.GetAPIReader(),
